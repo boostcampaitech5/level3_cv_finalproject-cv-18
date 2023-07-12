@@ -1,5 +1,6 @@
 import io
 import os
+import sys
 import tempfile
 import time
 import warnings
@@ -10,17 +11,23 @@ import cv2
 import uvicorn
 from fastapi import FastAPI, File
 from fastapi.responses import JSONResponse
-from ocr.inference import inference, load_text_recognition_model
 from PIL import Image
+
 from ultralytics import YOLO
 
 warnings.filterwarnings("ignore")
 
 app = FastAPI()
 
+sys.path.append("/opt/ml/level3_cv_finalproject-cv-18/deep-text-recognition-benchmark")
 
-model = YOLO("/opt/ml/serving/best.pt")
+from inference import inference, load_text_recognition_model
+
 ocr_model = load_text_recognition_model(save_model="/opt/ml/serving/best_accuracy.pth", device="cuda")
+
+sys.path.append("/opt/ml/level3_cv_finalproject-cv-18/app")
+
+model = YOLO("../ultralytics/object-detection/100epoch_cos_mosaic50/weights/best.pt")
 
 
 # input: 이미지, output: [(x, y, x, y), (x, y, x, y)](좌표)
