@@ -47,8 +47,8 @@ def detection(image):
 def ocr(image, box: Tuple) -> str:
     image = image.convert("L")
     cropped_box = image.crop((*box,))
-    ocr_result = inference(model=ocr_model, img_array=cropped_box, device="cuda")
-    return str(ocr_result)
+    ocr_result, confidence_score = inference(model=ocr_model, img_array=cropped_box, device="cuda")
+    return ocr_result, confidence_score
 
 
 # 이미지 바운딩박스, OCR 결과 계산
@@ -59,8 +59,11 @@ def image(file: bytes = File(...)):
     output = {}
 
     for i, item in enumerate(plate_list):
-        ocr_result = ocr(image, item)
-        output[f"car{i}"] = {"coordinate": [(item[0], item[1]), (item[2], item[3])], "OCR": str(ocr_result)}
+        ocr_result, confidence_score = ocr(image, item)
+        output[f"car{i}"] = {
+            "coordinate": [(item[0], item[1]), (item[2], item[3])],
+            "OCR": [ocr_result, confidence_score.item()],
+        }
 
     return JSONResponse(content=output)
 
@@ -88,8 +91,11 @@ def video(file: bytes = File(...)):
 
         plate_list = detection(frame)
         for i, item in enumerate(plate_list):
-            ocr_result = ocr(frame, item)
-            output[f"car{i}"] = {"coordinate": [(item[0], item[1]), (item[2], item[3])], "OCR": str(ocr_result)}
+            ocr_result, confidence_score = ocr(frame, item)
+            output[f"car{i}"] = {
+                "coordinate": [(item[0], item[1]), (item[2], item[3])],
+                "OCR": [ocr_result, confidence_score.item()],
+            }
         output_list[f"frame{num_frame}"] = output
         num_frame += 1
 
