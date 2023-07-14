@@ -51,19 +51,33 @@ def ocr(image, box: Tuple) -> str:
     return ocr_result, confidence_score
 
 
+def calc_avg(avg: float, val: timedelta, idx: int) -> float:
+    return idx / (idx + 1) * avg + val.total_seconds() / (idx + 1)
+
+
 # 이미지 바운딩박스, OCR 결과 계산
 @app.post("/image")
 def image(file: bytes = File(...)):
     image = Image.open(io.BytesIO(file))
+
+    start = time.time()
     plate_list = detection(image)
+    detection_time = timedelta(seconds=time.time() - start)
+
     output = {}
+    ocr_avg_time = 0
 
     for i, item in enumerate(plate_list):
+        start = time.time()
         ocr_result, confidence_score = ocr(image, item)
+        ocr_avg_time = calc_avg(ocr_avg_time, timedelta(seconds=time.time() - start), i)
+
         output[f"car{i}"] = {
             "coordinate": [(item[0], item[1]), (item[2], item[3])],
             "OCR": [ocr_result, confidence_score.item()],
         }
+
+    output["time"] = {"detection": (1, detection_time.total_seconds()), "ocr": (i + 1, ocr_avg_time)}
 
     return JSONResponse(content=output)
 
@@ -71,37 +85,51 @@ def image(file: bytes = File(...)):
 # 비디오 바운딩박스 OCR 결과 계산
 @app.post("/video")
 def video(file: bytes = File(...)):
-    # start = time.time()
-    num_frame = 0
+    detection_avg_time = 0
+    ocr_avg_time = 0
+    num_frame, num_ocr = 0, 0
+
     with tempfile.NamedTemporaryFile(delete=False) as f:
         f.write(file)
         temp_path = f.name
 
     capture = cv2.VideoCapture(temp_path)
     output_list = {}
+
     while capture.isOpened():
         ret, frame = capture.read()
         if not ret:
             break
+
         frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         output = {}
 
         if num_frame == 1:
             pass
 
+        start = time.time()
         plate_list = detection(frame)
+        detection_avg_time = calc_avg(detection_avg_time, timedelta(seconds=time.time() - start), num_frame)
+
         for i, item in enumerate(plate_list):
+            start = time.time()
             ocr_result, confidence_score = ocr(frame, item)
+            ocr_avg_time = calc_avg(ocr_avg_time, timedelta(seconds=time.time() - start), num_ocr)
+            num_ocr += 1
+
             output[f"car{i}"] = {
                 "coordinate": [(item[0], item[1]), (item[2], item[3])],
                 "OCR": [ocr_result, confidence_score.item()],
             }
+
         output_list[f"frame{num_frame}"] = output
         num_frame += 1
 
+    output_list["time"] = {"detection": (num_frame + 1, detection_avg_time), "ocr": (num_ocr + 1, ocr_avg_time)}
+
     capture.release()
     os.unlink(temp_path)
-    # print(timedelta(seconds=time.time() - start))
+
     return JSONResponse(content=output_list)
 
 
