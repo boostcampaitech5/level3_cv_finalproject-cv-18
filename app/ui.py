@@ -1,10 +1,10 @@
-import io
+import os
 import tempfile
+import time
 from ast import literal_eval
 from copy import deepcopy
-from datetime import datetime
+from datetime import timedelta
 
-import av
 import cv2
 import numpy as np
 import requests
@@ -46,7 +46,6 @@ if st.button("번호판 찾기"):
             with st.spinner("로딩중..."):
                 segments = image_process(input, backend_image)
                 my_dict = literal_eval(segments.content.decode("utf-8"))
-                print(my_dict)
                 file_bytes = np.asarray(bytearray(input.read()), dtype=np.uint8)
                 opencv_image = cv2.imdecode(file_bytes, 1)
                 original_image = deepcopy(opencv_image)
@@ -80,73 +79,63 @@ if st.button("번호판 찾기"):
                             col1.image(cropped_img, use_column_width=True, channels="BGR")
                         # 각 bounding box에 해당하는 번호판을 crop된 이미지 옆에 출력
                         elif k == "OCR":
-                            col2.text(f"해당 번호판의 번호는 {v}입니다.")
+                            col2.text(f"해당 번호판의 번호는 {round(v[1], 1) * 100}%의 신뢰도로 {v[0]}입니다.")
         # 입력값이 영상일 경우
         elif filename.endswith(".avi") or filename.endswith(".mp4"):
+            start = time.time()
             output = video_process(input, backend_video)
             video_dict = literal_eval(output.content.decode("utf-8"))
-            frameST = st.empty()
-            img_frame_list = []
+            output_time = timedelta(seconds=time.time() - start)
+            middle = time.time()
+            with tempfile.NamedTemporaryFile(delete=False) as f:
+                f.write(input.read())
+                temp_path = f.name
 
-            def play_video(file):
-                cap = cv2.VideoCapture(file.name)
-                while True:
-                    ret, frame = cap.read()
-                    if frame is not None:
-                        img_frame_list.append(frame)
-                        height, width, layers = frame.shape
-                        size = (width, height)
-                        fps = cap.get(cv2.CAP_PROP_FPS)
-                        total_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                    else:
-                        break
-                return size, fps, total_frame
-
-            video = tempfile.NamedTemporaryFile(delete=False)
-            video.write(input.read())
-            size, fps, total_frame = play_video(video)
-            output_memory_file = io.BytesIO(input.read())
-            width = size[0]
-            height = size[1]
-            n_frmaes = int(fps)
-            output = av.open(output_memory_file, "w", format="mp4")
-            stream = output.add_stream("h264", str(fps))
-            stream.width = width
-            stream.height = height
-            # stream.pix_fmt = 'yuv444p'
-            stream.pix_fmt = "yuv420p"
-            stream.options = {"crf": "17"}
-            # 적당한 폰트 크기가 얼마지?
+            capture = cv2.VideoCapture(temp_path)
+            width, height = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = capture.get(cv2.CAP_PROP_FPS)
             font = ImageFont.truetype("fonts/MaruBuri-Bold.ttf", int(height / 36))
-            for i in range(total_frame):
-                img = img_frame_list[i]
-                for keys, values in video_dict.items():
-                    if keys == f"frame{i}":
-                        for key, value in values.items():
-                            for k, v in value.items():
-                                if k == "coordinate":
-                                    # print(v[0], v[1])
-                                    cv2.rectangle(img, v[0], v[1], (255, 0, 0), 3)
-                                    x, y = v[0][0], v[0][1]
-                                elif k == "OCR":
-                                    img_pil = Image.fromarray(img)
-                                    draw = ImageDraw.Draw(img_pil)
-                                    draw.text((x, y - int(height / 36) - 2), v, (255, 0, 0), font=font)
-                                    img = np.array(img_pil)
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter("video.mp4", fourcc, fps, (width, height))
 
-                frame = av.VideoFrame.from_ndarray(img, format="bgr24")
-                packet = stream.encode(frame)
-                output.mux(packet)
-            packet = stream.encode(None)
-            output.mux(packet)
-            output.close()
+            num_frame = 0
+            while capture.isOpened():
+                ret, frame = capture.read()
+                if not ret:
+                    break
+                for car in video_dict[f"frame{num_frame}"].values():
+                    left_top, right_bottom = car["coordinate"]
+                    ocr_result, confidence_score = car["OCR"]
 
-            output_memory_file.seek(0)
-            with open("output.mp4", "wb") as f:
-                f.write(output_memory_file.getbuffer())
-            video_file = open("output.mp4", "rb")
+                    if confidence_score > 0.5:
+                        cv2.rectangle(frame, left_top, right_bottom, (255, 0, 0), 3)
+                        x, y = left_top[0], left_top[1]
+                        img_pil = Image.fromarray(frame)
+                        draw = ImageDraw.Draw(img_pil)
+                        draw.text(
+                            (x, y - int(height / 36) - 2),
+                            f"{ocr_result}({round(confidence_score, 1)})",
+                            (0, 0, 255),
+                            font=font,
+                        )
+                        frame = np.array(img_pil)
+                out.write(frame)
+                num_frame += 1
+
+            capture.release()
+            out.release()
+            os.unlink(temp_path)
+
+            os.system(f"ffmpeg -y -i {'video.mp4'} -vcodec libx264 {'video_h264.mp4'}")
+            os.remove("video.mp4")
+
+            video_file = open("video_h264.mp4", "rb")
             video_bytes = video_file.read()
             st.video(video_bytes)
+
+            print(f"모델 출력: {output_time}")
+            print(f"영상 변환: {timedelta(seconds=time.time() - middle)}")
+            print(f"총 소요시간: {timedelta(seconds=time.time() - start)}")
     else:
         # handler: no image
         st.text("이미지를 업로드 한 후 번호판 찾기를 눌러주세요")
