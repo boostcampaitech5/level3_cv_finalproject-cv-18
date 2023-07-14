@@ -4,8 +4,9 @@ import sys
 import tempfile
 import time
 import warnings
-from datetime import timedelta
+from datetime import timedelta, datetime
 from typing import Tuple
+import psycopg2
 
 import cv2
 import uvicorn
@@ -18,6 +19,12 @@ from ultralytics import YOLO
 warnings.filterwarnings("ignore")
 
 app = FastAPI()
+
+conn = psycopg2.connect(
+   database="logger", user='admin', password='vision', host='127.0.0.1', port= '5432'
+)
+conn.autocommit = True
+cursor = conn.cursor()
 
 sys.path.append("/opt/ml/level3_cv_finalproject-cv-18/deep-text-recognition-benchmark")
 
@@ -58,6 +65,8 @@ def calc_avg(avg: float, val: timedelta, idx: int) -> float:
 # 이미지 바운딩박스, OCR 결과 계산
 @app.post("/image")
 def image(file: bytes = File(...)):
+    begin = time.time()
+    db_ocr = []
     image = Image.open(io.BytesIO(file))
 
     start = time.time()
@@ -70,6 +79,7 @@ def image(file: bytes = File(...)):
     for i, item in enumerate(plate_list):
         start = time.time()
         ocr_result, confidence_score = ocr(image, item)
+        db_ocr.append(ocr_result)
         ocr_avg_time = calc_avg(ocr_avg_time, timedelta(seconds=time.time() - start), i)
 
         output[f"car{i}"] = {
@@ -79,12 +89,29 @@ def image(file: bytes = File(...)):
 
     output["time"] = {"detection": (1, detection_time.total_seconds()), "ocr": (i + 1, ocr_avg_time)}
 
+    file_type = str("image")
+    image_input_time = str(datetime.now())
+    id = str(hash(image_input_time))
+    ocr_ret = str(db_ocr).replace('\'', '"')
+    image_bbox = str(plate_list).replace('\'', '"') 
+    gcs_directory = str("/opt/ml")
+    output_time = timedelta(seconds=time.time() - begin)
+
+    sql = f"insert into log (id, image_bbox, file_type, ocr_result, gcs_directory, image_input_time, input_process_time) values ('{id}', '{image_bbox}', '{file_type}', '{ocr_ret}', '{gcs_directory}', '{image_input_time}', '{output_time}');"
+    print(sql)
+    cursor.execute(sql)
+    print("log for image input saved")
+
     return JSONResponse(content=output)
 
 
 # 비디오 바운딩박스 OCR 결과 계산
 @app.post("/video")
 def video(file: bytes = File(...)):
+    begin = time.time()
+    db_ocr = []
+    db_plate = []
+
     detection_avg_time = 0
     ocr_avg_time = 0
     num_frame, num_ocr = 0, 0
@@ -97,6 +124,7 @@ def video(file: bytes = File(...)):
     output_list = {}
 
     while capture.isOpened():
+        temp_ocr_db = []
         ret, frame = capture.read()
         if not ret:
             break
@@ -109,6 +137,7 @@ def video(file: bytes = File(...)):
 
         start = time.time()
         plate_list = detection(frame)
+        db_plate.append(plate_list)
         detection_avg_time = calc_avg(detection_avg_time, timedelta(seconds=time.time() - start), num_frame)
 
         for i, item in enumerate(plate_list):
@@ -124,11 +153,25 @@ def video(file: bytes = File(...)):
 
         output_list[f"frame{num_frame}"] = output
         num_frame += 1
+        db_ocr.append(temp_ocr_db)
 
     output_list["time"] = {"detection": (num_frame + 1, detection_avg_time), "ocr": (num_ocr + 1, ocr_avg_time)}
 
     capture.release()
     os.unlink(temp_path)
+
+    file_type = str("video")
+    image_input_time = str(datetime.now())
+    id = str(hash(image_input_time))
+    ocr_ret = str(db_ocr).replace('\'', '"')
+    video_bbox = str(db_plate).replace('\'', '"') 
+    gcs_directory = str("/opt/ml")
+    output_time = timedelta(seconds=time.time() - begin)
+
+    sql = f"insert into log (id, video_bbox, file_type, ocr_result, gcs_directory, image_input_time, input_process_time) values ('{id}', '{video_bbox}', '{file_type}', '{ocr_ret}', '{gcs_directory}', '{image_input_time}', '{output_time}');"
+    print(sql)
+    cursor.execute(sql)
+    print("log for video input saved")
 
     return JSONResponse(content=output_list)
 
