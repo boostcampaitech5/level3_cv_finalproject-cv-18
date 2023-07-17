@@ -4,6 +4,7 @@ import time
 from ast import literal_eval
 from copy import deepcopy
 from datetime import timedelta
+import base64
 
 import cv2
 import numpy as np
@@ -19,14 +20,14 @@ backend_video = "http://127.0.0.1:8000/video"
 
 def image_process(image, server_url: str):
     m = MultipartEncoder(fields={"file": ("filename", image, "image/png")})
-    r = requests.post(server_url, data=m, headers={"Content-Type": m.content_type}, timeout=8000)
+    r = requests.post(server_url, data=m, headers={"Content-Type": m.content_type, "filename":  base64.b64encode(image.name.encode('utf-8')).decode('utf-8')}, timeout=8000)
 
     return r
 
 
 def video_process(video, server_url: str):
     m = MultipartEncoder(fields={"file": ("filename", video, "video/mp4")})
-    r = requests.post(server_url, data=m, headers={"Content-Type": m.content_type}, timeout=8000)
+    r = requests.post(server_url, data=m, headers={"Content-Type": m.content_type, "filename":  base64.b64encode(video.name.encode('utf-8')).decode('utf-8')}, timeout=8000)
 
     return r
 
@@ -165,6 +166,8 @@ if st.button("번호판 찾기"):
             st.text(
                 f"      ocr은 {video_dict['time']['ocr'][0]}번 수행됐고 평균 수행 시간은 {video_dict['time']['ocr'][1]:.3f}초 입니다"
             )
+        else:
+            st.text("이미지의 경우 jpg, png, jpeg 파일만, 영상의 경우 avi, mp4 파일만 가능합니다")
     else:
         # handler: no image
         st.text("이미지를 업로드 한 후 번호판 찾기를 눌러주세요")
