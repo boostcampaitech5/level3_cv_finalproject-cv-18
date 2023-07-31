@@ -7,6 +7,7 @@ import lmdb
 import torch
 
 from natsort import natsorted
+import albumentations as A
 from PIL import Image
 import numpy as np
 from torch.utils.data import Dataset, ConcatDataset, Subset
@@ -84,12 +85,12 @@ class Batch_Balanced_Dataset(object):
 
         for i, data_loader_iter in enumerate(self.dataloader_iter_list):
             try:
-                image, text = data_loader_iter.next()
+                image, text = next(data_loader_iter)
                 balanced_batch_images.append(image)
                 balanced_batch_texts += text
             except StopIteration:
                 self.dataloader_iter_list[i] = iter(self.data_loader_list[i])
-                image, text = self.dataloader_iter_list[i].next()
+                image, text = next(self.dataloader_iter_list[i])
                 balanced_batch_images.append(image)
                 balanced_batch_texts += text
             except ValueError:
@@ -125,6 +126,30 @@ def hierarchical_dataset(root, opt, select_data='/'):
 
     return concatenated_dataset, dataset_log
 
+def valid_hierarchical_dataset(root, opt, select_data='/'):
+    """ select_data='/' contains all sub-directory of root directory """
+    dataset_list = []
+    dataset_log = f'dataset_root:    {root}\t dataset: {select_data[0]}'
+    print(dataset_log)
+    dataset_log += '\n'
+    for dirpath, dirnames, filenames in os.walk(root+'/'):
+        if not dirnames:
+            select_flag = False
+            for selected_d in select_data:
+                if selected_d in dirpath:
+                    select_flag = True
+                    break
+
+            if select_flag:
+                dataset = ValidLmdbDataset(dirpath, opt)
+                sub_dataset_log = f'sub-directory:\t/{os.path.relpath(dirpath, root)}\t num samples: {len(dataset)}'
+                print(sub_dataset_log)
+                dataset_log += f'{sub_dataset_log}\n'
+                dataset_list.append(dataset)
+
+    concatenated_dataset = ConcatDataset(dataset_list)
+
+    return concatenated_dataset, dataset_log
 
 class LmdbDataset(Dataset):
 
@@ -136,7 +161,19 @@ class LmdbDataset(Dataset):
         if not self.env:
             print('cannot create lmdb from %s' % (root))
             sys.exit(0)
+        self.transform = A.Compose([
+		# 변환할 함수들 리스트
+            A.OneOf([
+                A.GaussNoise(var_limit=(10.0, 50.0), mean=50, per_channel=True, p=0.5),
+                A.ISONoise(color_shift=(0.01, 0.3), intensity=(0.1, 1.0), always_apply=False, p=0.5,),
+                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, brightness_by_max=True,p=0.5,),
+                A.Blur(blur_limit=10, p=0.5,),
+            ], p=0.5),
 
+            A.Rotate(limit=10, interpolation=1, border_mode=4, value=None, mask_value=None, rotate_method='largest_box', crop_border=True, p=0.5,),
+            A.Cutout(num_holes=10, max_h_size=10, max_w_size=10, fill_value=0, p=0.5,),
+            A.Resize(self.opt.imgH, self.opt.imgW, interpolation=1, p=1)
+        ])
         with self.env.begin(write=False) as txn:
             nSamples = int(txn.get('num-samples'.encode()))
             self.nSamples = nSamples
@@ -182,6 +219,7 @@ class LmdbDataset(Dataset):
         assert index <= len(self), 'index range error'
         index = self.filtered_index_list[index]
 
+        
         with self.env.begin(write=False) as txn:
             label_key = 'label-%09d'.encode() % index
             label = txn.get(label_key).decode('utf-8')
@@ -194,8 +232,18 @@ class LmdbDataset(Dataset):
             try:
                 if self.opt.rgb:
                     img = Image.open(buf).convert('RGB')  # for color image
+                    img = np.array(img, dtype='uint8')  # fix
+                    transformed = self.transform(image=img)
+                    img = transformed['image']
+                    img = np.array(img, dtype='uint8') 
                 else:
-                    img = Image.open(buf).convert('L')
+                    img = Image.open(buf).convert('RGB')  # for color image
+                    img = np.array(img, dtype='uint8')  # fix
+                    transformed = self.transform(image=img)
+                    img = transformed['image']
+                    img = Image.fromarray(img)
+                    img = img.convert('L')
+                    img = np.array(img, dtype='uint8')
 
             except IOError:
                 print(f'Corrupted image for {index}')
@@ -212,9 +260,112 @@ class LmdbDataset(Dataset):
             # We only train and evaluate on alphanumerics (or pre-defined character set in train.py)
             out_of_char = f'[^{self.opt.character}]'
             label = re.sub(out_of_char, '', label)
-
+        # fix
         return (img, label)
 
+class ValidLmdbDataset(Dataset):
+
+    def __init__(self, root, opt):
+
+        self.root = root
+        self.opt = opt
+        self.env = lmdb.open(root, max_readers=32, readonly=True, lock=False, readahead=False, meminit=False)
+        if not self.env:
+            print('cannot create lmdb from %s' % (root))
+            sys.exit(0)
+
+        self.transform = A.Compose([
+		# 변환할 함수들 리스트
+            A.Resize(self.opt.imgH, self.opt.imgW, interpolation=1, p=1)
+        ])
+        with self.env.begin(write=False) as txn:
+            nSamples = int(txn.get('num-samples'.encode()))
+            self.nSamples = nSamples
+
+            if self.opt.data_filtering_off:
+                # for fast check or benchmark evaluation with no filtering
+                self.filtered_index_list = [index + 1 for index in range(self.nSamples)]
+            else:
+                """ Filtering part
+                If you want to evaluate IC15-2077 & CUTE datasets which have special character labels,
+                use --data_filtering_off and only evaluate on alphabets and digits.
+                see https://github.com/clovaai/deep-text-recognition-benchmark/blob/6593928855fb7abb999a99f428b3e4477d4ae356/dataset.py#L190-L192
+
+                And if you want to evaluate them with the model trained with --sensitive option,
+                use --sensitive and --data_filtering_off,
+                see https://github.com/clovaai/deep-text-recognition-benchmark/blob/dff844874dbe9e0ec8c5a52a7bd08c7f20afe704/test.py#L137-L144
+                """
+                self.filtered_index_list = []
+                for index in range(self.nSamples):
+                    index += 1  # lmdb starts with 1
+                    label_key = 'label-%09d'.encode() % index
+                    label = txn.get(label_key).decode('utf-8')
+
+                    if len(label) > self.opt.batch_max_length:
+                        # print(f'The length of the label is longer than max_length: length
+                        # {len(label)}, {label} in dataset {self.root}')
+                        continue
+
+                    # By default, images containing characters which are not in opt.character are filtered.
+                    # You can add [UNK] token to `opt.character` in utils.py instead of this filtering.
+                    out_of_char = f'[^{self.opt.character}]'
+                    if re.search(out_of_char, label.lower()):
+                        continue
+
+                    self.filtered_index_list.append(index)
+
+                self.nSamples = len(self.filtered_index_list)
+
+    def __len__(self):
+        return self.nSamples
+
+    def __getitem__(self, index):
+        assert index <= len(self), 'index range error'
+        index = self.filtered_index_list[index]
+
+        
+        with self.env.begin(write=False) as txn:
+            label_key = 'label-%09d'.encode() % index
+            label = txn.get(label_key).decode('utf-8')
+            img_key = 'image-%09d'.encode() % index
+            imgbuf = txn.get(img_key)
+
+            buf = six.BytesIO()
+            buf.write(imgbuf)
+            buf.seek(0)
+            try:
+                if self.opt.rgb:
+                    img = Image.open(buf).convert('RGB')  # for color image
+                    img = np.array(img, dtype='uint8')  # fix
+                    transformed = self.transform(image=img)
+                    img = transformed['image']
+                    img = np.array(img, dtype='uint8') 
+                else:
+                    img = Image.open(buf).convert('RGB')  # for color image
+                    img = np.array(img, dtype='uint8')  # fix
+                    transformed = self.transform(image=img)
+                    img = transformed['image']
+                    img = Image.fromarray(img)
+                    img = img.convert('L')
+                    img = np.array(img, dtype='uint8')
+
+            except IOError:
+                print(f'Corrupted image for {index}')
+                # make dummy image and dummy label for corrupted image.
+                if self.opt.rgb:
+                    img = Image.new('RGB', (self.opt.imgW, self.opt.imgH))
+                else:
+                    img = Image.new('L', (self.opt.imgW, self.opt.imgH))
+                label = '[dummy_label]'
+
+            if not self.opt.sensitive:
+                label = label.lower()
+
+            # We only train and evaluate on alphanumerics (or pre-defined character set in train.py)
+            out_of_char = f'[^{self.opt.character}]'
+            label = re.sub(out_of_char, '', label)
+        # fix
+        return (img, label)
 
 class RawDataset(Dataset):
 
@@ -261,7 +412,7 @@ class ResizeNormalize(object):
         self.toTensor = transforms.ToTensor()
 
     def __call__(self, img):
-        img = img.resize(self.size, self.interpolation)
+        #img = img.resize(self.size, self.interpolation)
         img = self.toTensor(img)
         img.sub_(0.5).div_(0.5)
         return img
