@@ -13,7 +13,7 @@ import torch.utils.data
 import numpy as np
 
 from utils import CTCLabelConverter, CTCLabelConverterForBaiduWarpctc, AttnLabelConverter, Averager
-from dataset import hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
+from dataset import hierarchical_dataset, valid_hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
 from model import Model
 from test import validation
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -32,7 +32,7 @@ def train(opt):
 
     log = open(f'./saved_models/{opt.exp_name}/log_dataset.txt', 'a')
     AlignCollate_valid = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
-    valid_dataset, valid_dataset_log = hierarchical_dataset(root=opt.valid_data, opt=opt)
+    valid_dataset, valid_dataset_log = valid_hierarchical_dataset(root=opt.valid_data, opt=opt)
     valid_loader = torch.utils.data.DataLoader(
         valid_dataset, batch_size=opt.batch_size,
         shuffle=True,  # 'True' to check training progress with validation function.
@@ -234,8 +234,8 @@ if __name__ == '__main__':
     parser.add_argument('--manualSeed', type=int, default=1111, help='for random seed setting')
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=4)
     parser.add_argument('--batch_size', type=int, default=192, help='input batch size')
-    parser.add_argument('--num_iter', type=int, default=300000, help='number of iterations to train for')
-    parser.add_argument('--valInterval', type=int, default=2000, help='Interval between each validation')
+    parser.add_argument('--num_iter', type=int, default=10000, help='number of iterations to train for')  # fix
+    parser.add_argument('--valInterval', type=int, default=100, help='Interval between each validation')  # fix
     parser.add_argument('--saved_model', default='', help="path to model to continue training")
     parser.add_argument('--FT', action='store_true', help='whether to do fine-tuning')
     parser.add_argument('--adam', action='store_true', help='Whether to use adam (default is Adadelta)')
@@ -246,9 +246,9 @@ if __name__ == '__main__':
     parser.add_argument('--grad_clip', type=float, default=5, help='gradient clipping value. default=5')
     parser.add_argument('--baiduCTC', action='store_true', help='for data_filtering_off mode')
     """ Data processing """
-    parser.add_argument('--select_data', type=str, default='MJ-ST',
+    parser.add_argument('--select_data', type=str, default='/',  # fix
                         help='select training data (default is MJ-ST, which means MJ and ST used as training data)')
-    parser.add_argument('--batch_ratio', type=str, default='0.5-0.5',
+    parser.add_argument('--batch_ratio', type=str, default='1',  # fix
                         help='assign ratio for each selected data in the batch')
     parser.add_argument('--total_data_usage_ratio', type=str, default='1.0',
                         help='total data usage ratio, this ratio is multiplied to total number of data.')
@@ -288,6 +288,7 @@ if __name__ == '__main__':
         # opt.character += 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
         opt.character = string.printable[:-6]  # same with ASTER setting (use 94 char).
 
+    opt.character = "0123456789가강거경계고관광구금기김나남너노누다대더도동두등라러로루리마머명모무문미바배뱌버보부북사산서소수아악안양어연영오용우울원육이인자작저전조주중지차천초추충카타파평포하허호홀히"
     """ Seed and GPU setting """
     # print("Random Seed: ", opt.manualSeed)
     random.seed(opt.manualSeed)
@@ -313,5 +314,8 @@ if __name__ == '__main__':
         If you dont care about it, just commnet out these line.)
         opt.num_iter = int(opt.num_iter / opt.num_gpu)
         """
+
+    import warnings
+    warnings.filterwarnings(action='ignore')
 
     train(opt)
